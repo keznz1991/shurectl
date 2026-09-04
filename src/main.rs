@@ -95,6 +95,14 @@ struct Cli {
     /// toggle (default): flip current state. on: mute. off: unmute.
     #[arg(long, short = 'm', num_args = 0..=1, default_missing_value = "toggle", value_name = "ACTION")]
     mute: Option<MuteAction>,
+
+    /// Print the connected device's hardware mute and button state, then exit.
+    #[arg(long)]
+    status: bool,
+
+    /// Unmute an MV6, disable its physical mute button, verify both states, then exit.
+    #[arg(long)]
+    always_on: bool,
 }
 
 fn main() -> Result<()> {
@@ -103,6 +111,14 @@ fn main() -> Result<()> {
     if let Some(action) = cli.mute {
         let path = cli.device.as_deref();
         return cmd_mute(action, path);
+    }
+
+    if cli.status {
+        return cmd_status(cli.device.as_deref());
+    }
+
+    if cli.always_on {
+        return cmd_always_on(cli.device.as_deref());
     }
 
     if cli.list {
@@ -244,6 +260,63 @@ fn cmd_mute(action: MuteAction, device_path: Option<&str>) -> Result<()> {
 
     dev.set_mute(muted).context("Could not set mute")?;
     println!("Mute → {}", if muted { "ON" } else { "OFF" });
+    Ok(())
+}
+
+fn open_device(device_path: Option<&str>) -> Result<ShureDevice> {
+    match device_path {
+        Some(path) => ShureDevice::open_path(path),
+        None => ShureDevice::open(),
+    }
+    .context("Could not open device")
+}
+
+fn print_hardware_state(dev: &ShureDevice) -> Result<()> {
+    let state = dev.get_state().context("Could not read device state")?;
+    println!("Model → {}", dev.model.display_name());
+    println!("Firmware → {}", state.firmware_version);
+    println!("Mute → {}", if state.muted { "ON" } else { "OFF" });
+    println!(
+        "Physical mute button → {}",
+        if state.mute_btn_disabled {
+            "DISABLED"
+        } else {
+            "ACTIVE"
+        }
+    );
+    Ok(())
+}
+
+fn cmd_status(device_path: Option<&str>) -> Result<()> {
+    let dev = open_device(device_path)?;
+    print_hardware_state(&dev)
+}
+
+fn cmd_always_on(device_path: Option<&str>) -> Result<()> {
+    let dev = open_device(device_path)?;
+    if dev.model != DeviceModel::Mv6 {
+        anyhow::bail!("Always-on mode is only supported for the Shure MV6");
+    }
+
+    dev.set_mute(false).context("Could not unmute the MV6")?;
+    dev.set_mv6_mute_btn_disable(true)
+        .context("Could not disable the MV6 mute button")?;
+
+    std::thread::sleep(Duration::from_millis(150));
+    let state = dev.get_state().context("Could not verify MV6 state")?;
+    println!("Mute → {}", if state.muted { "ON" } else { "OFF" });
+    println!(
+        "Physical mute button → {}",
+        if state.mute_btn_disabled {
+            "DISABLED"
+        } else {
+            "ACTIVE"
+        }
+    );
+
+    if state.muted || !state.mute_btn_disabled {
+        anyhow::bail!("MV6 rejected one or more always-on settings");
+    }
     Ok(())
 }
 
